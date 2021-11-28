@@ -1,0 +1,370 @@
+---
+title: "The Impact of Health Insurance Coverage on Racial/Ethnic Disparities in U.S. Childhood and Adolescent Cancer Stage at Diagnosis"
+author: "Xiaoyan Wang"
+date: "1/28/2021"
+output:
+  word_document: default
+  html_document: default
+---
+
+#### Load libraries
+```{r message=FALSE, warning=FALSE}
+rm(list=ls())
+pacman::p_load(readr, funModeling, tidyverse, questionr, mma, survival, mediation,RColorBrewer, gtools,regclass, lmtest, openxlsx, mice, survminer,patchwork)
+```
+
+#### Data management
+```{r message=FALSE, warning=FALSE}
+seer <- read_delim("RacialDData.txt", "\t", escape_double = FALSE, trim_ws = TRUE)%>%
+  mutate(age=as.numeric(`Age at diagnosis`),
+         agecat=case_when(age<1 ~"<1",
+                          age>=1 & age<=4 ~"1-4",
+                          age>=5 & age<=9 ~"5-9",
+                          age>=10 & age<=14 ~"10-14",
+                          age>=15 & age<=19 ~"15-19"),
+         agecat=factor(agecat, levels=c("<1", "1-4", "5-9", "10-14","15-19")),
+         agebi=ifelse(age<=14, "children","Adolescents"),
+         agebi=factor(agebi, levels=c("children","Adolescents")),
+         famincome=as.numeric(`% Families below poverty ACS 2013-2017`),
+         unemploy=as.numeric(`% Unemployed ACS 2013-2017`),
+         houseincome=as.numeric(`Median household income (in tens) ACS 2013-2017`),
+         famincomecat=quantcut(famincome),
+         unemploycat=quantcut(unemploy),
+         houseincomecat=quantcut(houseincome),
+         raceeth=case_when(`Race and origin recode (NHW, NHB, NHAIAN, NHAPI, Hispanic)` 
+                           %in% c("Non-Hispanic White") ~ "Non-Hispanic White",
+                           `Race and origin recode (NHW, NHB, NHAIAN, NHAPI, Hispanic)` 
+                           %in% c("Non-Hispanic Black") ~ "Non-Hispanic Black",
+                           `Race and origin recode (NHW, NHB, NHAIAN, NHAPI, Hispanic)` 
+                           %in% c("Non-Hispanic Asian or Pacific Islander") ~ "Non-Hispanic Asian",
+                           `Race and origin recode (NHW, NHB, NHAIAN, NHAPI, Hispanic)` 
+                           %in% c("Hispanic (All Races)") ~ "Hispanic"),
+         raceeth=factor(raceeth, levels=c("Non-Hispanic White", "Non-Hispanic Black", "Non-Hispanic Asian", "Hispanic")),
+         Stage=case_when(`SEER Combined Summary Stage 2000 (2004+)` %in% c("Localized only") ~ 0,
+                         `SEER Combined Summary Stage 2000 (2004+)` %in% 
+                           c("Regional, NOS", "Regional lymph nodes involved only", 
+                             "Regional by both direct extension and lymph node involvement", 
+                             "Regional by direct extension only") ~ 1,
+                         `SEER Combined Summary Stage 2000 (2004+)` %in% c("Distant site(s)/node(s) involved") ~ 2),
+         Stage=factor(Stage, levels=0:2, labels = c("Localized", "Regional", "Distant")),
+         Stage_bi=case_when(Stage %in% c("Localized", "Regional") ~ "Early",
+                            Stage %in% c("Distant") ~ "Late"),
+         Stage_bi=factor(Stage_bi, levels = c("Early", "Late")),
+         cantype_cat=substring(`ICCC site rec extended ICD-O-3/WHO 2008`,1,4),
+         cantype_cat=sub("\\(.*", "", cantype_cat),
+         cantype_cat=ifelse(cantype_cat=="Not ", NA,
+                        ifelse(cantype_cat=="V Re", "V", cantype_cat)),
+         insur=case_when(`Insurance Recode (2007+)` %in% c("Insured", "Insured/No specifics") ~ "Insured",
+                         `Insurance Recode (2007+)` %in% c("Any Medicaid") ~ "Any Medicaid",
+                         `Insurance Recode (2007+)` %in% c("Uninsured") ~ "Uninsured"),
+         insur_p=case_when(`Insurance Recode (2007+)` %in% c("Insured") ~ "Insured",
+                         `Insurance Recode (2007+)` %in% c("Any Medicaid") ~ "Any Medicaid",
+                         `Insurance Recode (2007+)` %in% c("Uninsured") ~ "Uninsured"),
+         insur=factor(insur, levels = c( "Insured","Any Medicaid","Uninsured")),
+         insur2=factor(insur, levels = c("Insured", "Any Medicaid")),
+         region=case_when(`Rural-Urban Continuum Code 2013` %in% 
+                           c("Counties in metropolitan areas ge 1 million pop", 
+                             "Counties in metropolitan areas of 250,000 to 1 million pop", 
+                             "Counties in metropolitan areas of lt 250 thousand pop") ~ "Metro",
+                         `Rural-Urban Continuum Code 2013` %in% 
+                           c("Urban pop of 2,500 to 19,999, adjacent to a metro area", 
+                             "Urban pop of 2,500 to 19,999, not adjacent to a metro area", 
+                             "Urban pop of ge 20,000 adjacent to a metropolitan area", 
+                             "Urban pop of ge 20,000 not adjacent to a metropolitan area") ~ "Urban",
+                         `Rural-Urban Continuum Code 2013` %in% 
+                           c("Comp rural lt 2,500 urban pop, adjacent to a metro area", 
+                             "Comp rural lt 2,500 urban pop, not adjacent to metro area") ~ "Rural"),
+         region2=ifelse(region=="Rural"|region=="Urban", "Rural/Urban",region),
+         region=factor(region, levels=c("Metro", "Urban", "Rural")),
+         region2=factor(region2),
+         `Survival months`=as.numeric(`Survival months`),
+         death=case_when(`SEER cause-specific death classification`=="Alive or dead of other cause"~0,
+                         `SEER cause-specific death classification`=="Dead (attributable to this cancer dx)"~1)) %>%
+  filter(age<20,`Year of diagnosis`>2006, cantype_cat!="I",`First malignant primary indicator`=="Yes") %>%
+  dplyr::select(Stage_bi,raceeth, insur,agecat, Sex, houseincomecat, unemploycat, region2, 
+                cantype_cat, agebi, insur2,`Insurance Recode (2007+)`) %>%
+  as.data.frame()
+
+seer2 <- seer %>% filter(!is.na(insur2))%>% dplyr::select( Stage_bi,raceeth, insur2, everything()) %>%dplyr::select(-insur) %>% drop_na() 
+
+data <- seer %>% dplyr::select(-insur2) %>% drop_na() 
+```
+
+
+#### Table 1
+```{r}
+vars=c("agecat", "Sex","insur","houseincomecat", "famincomecat", "unemploycat", "region2","Stage_bi","cantype_cat")
+tab <- CreateTableOne(vars = vars, strata = "raceeth", data = data)
+tab1exp <- print(tab, quote = FALSE, noSpaces = TRUE, printToggle = FALSE, showAllLevels = TRUE)
+## Save to a CSV file
+write.csv(tab1exp, file = "Tab.csv")
+```
+
+#### Table 2
+```{r}
+t2 <- function(data) {
+m1 <- glm(Stage_bi ~ raceeth + agecat + Sex+ houseincomecat  +unemploycat+region2, data= data, family = "binomial")
+m2 <- glm(Stage_bi ~ raceeth + agecat + Sex+ houseincomecat  +unemploycat+region2+insur, data= data, family = "binomial")
+t <-  cbind(cbind(odds.ratio(m1)$OR[2:4],odds.ratio(m1)$`2.5 %`[2:4],odds.ratio(m1)$`97.5 %`[2:4]),
+      cbind(odds.ratio(m2)$OR[2:4],odds.ratio(m2)$`2.5 %`[2:4],odds.ratio(m2)$`97.5 %`[2:4]))
+return(t)
+}
+
+#Overall
+t2(data)
+#By cantype
+t2(data%>%filter(cantype_cat=="II"))
+t2(data%>%filter(cantype_cat=="III"))
+t2(data%>%filter(cantype_cat=="IV"))
+t2(data%>%filter(cantype_cat=="V"))
+t2(data%>%filter(cantype_cat=="VI"))
+t2(data%>%filter(cantype_cat=="VII"))
+t2(data%>%filter(cantype_cat=="VIII"))
+t2(data%>%filter(cantype_cat=="IX"))
+t2(data%>%filter(cantype_cat=="X"))
+t2(data%>%filter(cantype_cat=="XI"))
+```
+
+#### Table 3
+```{r}
+#by age
+t2(data%>%filter(agecat!="15-19"))
+
+m2 <- glm(Stage_bi ~ raceeth + agebi + Sex+ houseincomecat  +unemploycat+region2, data= data, family = "binomial")
+m3 <- glm(Stage_bi ~ raceeth*agebi + Sex+ houseincomecat  +unemploycat+region2+insur, data= data, family = "binomial")
+lrtest(m2, m3) #<0.001
+
+m2 <- glm(Stage_bi ~ raceeth + Sex+ houseincomecat  +unemploycat+region2, data= data%>%filter(agecat=="15-19"), family = "binomial")
+m3 <- glm(Stage_bi ~ raceeth + Sex+ houseincomecat  +unemploycat+region2+insur, data= data%>%filter(agecat=="15-19"), family = "binomial")
+t <-  cbind(cbind(odds.ratio(m1)$OR[2:4],odds.ratio(m1)$`2.5 %`[2:4],odds.ratio(m1)$`97.5 %`[2:4]),
+      cbind(odds.ratio(m2)$OR[2:4],odds.ratio(m2)$`2.5 %`[2:4],odds.ratio(m2)$`97.5 %`[2:4]),
+      cbind(odds.ratio(m3)$OR[2:4],odds.ratio(m3)$`2.5 %`[2:4],odds.ratio(m3)$`97.5 %`[2:4]))
+```
+
+#### Figure 1
+```{r}
+fig1data <- cbind(rep(c("Non-Hispanic Black", "Non-Hispanic Asian", "Hispanic"),3),
+                  rbind(tot[,1:3],tot[,4:6],tot[,7:9]))%>%
+  as.data.frame() 
+
+
+names(fig1data) <- c("race","HR","LL","UL")
+
+fig1data <- fig1data %>%
+  mutate(race=factor(race, levels=c("Hispanic","Non-Hispanic Asian","Non-Hispanic Black")),
+         HR=exp(as.numeric(HR)),
+         LL=exp(as.numeric(LL)),
+         UL=exp(as.numeric(UL)))
+
+
+te <- ggplot(fig1data[1:3,],aes(x = race, y =HR)) +
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymax = UL, ymin = LL), width = 0.2)+
+  scale_y_continuous(limits = c(1,1.6))+
+  coord_flip()+
+  theme(strip.background = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.title.y=element_blank(),
+        strip.text = element_text(size=9), 
+        panel.background = element_blank(),
+        axis.line.x = element_line(color="black", size = 0.3))+
+  geom_hline(yintercept = 1, color="grey", linetype = 2 )+
+  theme(legend.position="none")+
+  ylab("OR (95%CI)")
+
+de <- ggplot(fig1data[4:6,],aes(x = race, y =HR)) +
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymax = UL, ymin = LL), width = 0.2)+
+  scale_y_continuous(limits = c(1,1.6))+
+  coord_flip()+
+  theme(strip.background = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.title.y=element_blank(),
+        strip.text = element_text(size=9), 
+        panel.background = element_blank(),
+        axis.line.x = element_line(color="black", size = 0.3))+
+  geom_hline(yintercept = 1, color="grey", linetype = 2 )+
+  theme(legend.position="none")+
+  ylab("OR (95%CI)")
+
+ie <- ggplot(fig1data[7:9,],aes(x = race, y =HR)) +
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymax = UL, ymin = LL), width = 0.2)+
+  scale_y_continuous(limits = c(1,1.6))+
+  coord_flip()+
+  theme(strip.background = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.title.y=element_blank(),
+        axis.text.y = element_blank(),
+        strip.text = element_text(size=9), 
+        panel.background = element_blank(),
+        axis.line.x = element_line(color="black", size = 0.3))+
+  geom_hline(yintercept = 1, color="grey", linetype = 2 )+
+  theme(legend.position="none")+
+  ylab("OR (95%CI)")
+
+te+de+ie+guide_area()+plot_layout(nrow=1, widths = c(1,1,1,0.5))
+
+ggsave("Figure1.pdf", width = 10, height = 3, units ="in", dpi = 600)
+```
+
+#### Supplementary Table 1
+```{r}
+t <- ftable(data%>%xtabs(~cantype_cat+Stage_bi+raceeth,data=.)) %>%
+  as_tibble()%>%
+  group_by(cantype_cat,raceeth) %>%
+  mutate(Percentage=paste0(Freq," (",round(Freq/sum(Freq)*100,2),")"))%>%
+  filter(Stage_bi=="Late")%>%
+  dplyr::select(-Freq)%>%
+  spread(raceeth, Percentage)
+
+write.xlsx(t, "SuppTable1.xlsx", colNames=T, borders="rows")
+
+```
+
+#### Supplementary Table 2
+```{r}
+#imputation
+imp <- mice(seer,m=10, seed=2021)
+
+#Overall
+cbind(summary(pool(with(imp, glm(Stage_bi ~ raceeth + agecat + Sex+ houseincomecat  +unemploycat+region2, family = "binomial"))), conf.int = TRUE, exponentiate = TRUE)[2:4,c(1,2,7,8)],summary(pool(with(imp, glm(Stage_bi ~ raceeth + agecat + Sex+ houseincomecat  +unemploycat+region2+insur, family = "binomial"))), conf.int = TRUE, exponentiate = TRUE)[2:4,c(1,2,7,8)])
+
+#By cantype
+imp_c <- complete(imp, "long", include=T)
+imp_c2 <- imp_c%>%filter(cantype_cat=="II")
+imp_c2 <- as.mids(imp_c2)
+cbind(summary(pool(with(imp_c2, glm(Stage_bi ~ raceeth + agecat + Sex+ houseincomecat  +unemploycat+region2, family = "binomial"))), conf.int = TRUE, exponentiate = TRUE)[2:4,c(1,2,7,8)],summary(pool(with(imp_c2, glm(Stage_bi ~ raceeth + agecat + Sex+ houseincomecat  +unemploycat+region2+insur, family = "binomial"))), conf.int = TRUE, exponentiate = TRUE)[2:4,c(1,2,7,8)])
+```
+
+#### Supplementary Table 3
+```{r}
+####Mediation-cantype
+##Function to get te, de, ie
+med <- function(data) {
+  x=data[,c(3:8)] #covariates and mediators:stage_binary, RACE, AGE, SEX, educ and income
+  pred=data[,2] #exposure GCD
+  y=data[,1] 
+  #alpha: the significance level at which to test if the potential mediators (identified by contmed, binmed, and catmed) can be used as a covariate or mediator in estimating y when all variables in x are included in the model. The default value is alpha=0.1
+  #alpha2:the significant level at which to test if a potential mediator is related with the predictor. The default value is alpha2=0.1.
+  #n account for the randomness brought in by the sampling process. 
+  #n2 indicates the number of bootstrap iterations. 
+  set.seed(2020)
+  med<-mma(x,y,pred=pred, predref="Non-Hispanic White", catmed=1, catref="Insured", alpha=0.8, alpha2=0.8, n=30,n2=10,type="lp")
+  ie_1 <- summary(med)$bin.result$results$indirect.effect$pred[c(2,4:5),2]
+  ie_2 <- summary(med)$bin.result$results$indirect.effect$`predNon-Hispanic Asian`[c(2,4:5),2]
+  ie_3 <- summary(med)$bin.result$results$indirect.effect$predHispanic[c(2,4:5),2]
+  ie <- rbind(ie_1, ie_2, ie_3)
+  row.names(ie) <- c("Non-Hispanic Black", "Non-Hispanic Asian", "Hispanic")
+  te <- t(summary(med)$bin.result$results$total.effect[c(2,4:5),])
+  row.names(te) <- c("Non-Hispanic Black", "Non-Hispanic Asian", "Hispanic")
+  de <- t(summary(med)$bin.result$results$direct.effect[c(2,4:5),])
+  row.names(de) <- c("Non-Hispanic Black", "Non-Hispanic Asian", "Hispanic")
+  t <- cbind(te,de,ie)
+  return(t)
+}
+
+#Overall
+tot <- med(data)
+#By cantype
+c2 <- med(data%>%filter(cantype_cat=="II"))
+c3 <- med(data%>%filter(cantype_cat=="III")) #not include uninsured in the analyses
+c4 <- med(data%>%filter(cantype_cat=="IV"))
+c5 <- med(data%>%filter(cantype_cat=="V"))
+c6 <- med(data%>%filter(cantype_cat=="VI"))
+c7 <- med(data%>%filter(cantype_cat=="VII"))
+c8 <- med(data%>%filter(cantype_cat=="VIII"))
+c9 <- med(data%>%filter(cantype_cat=="IX"))
+c10 <- med(data%>%filter(cantype_cat=="X"))
+c11 <- med(data%>%filter(cantype_cat=="XI"))
+
+t4 <- rbind(tot, c2, c3, c4, c5, c6 ,c7 ,c8, c9 ,c10, c11)
+list <- list("Single mediator"=t4)
+write.xlsx(list, "MediationResults.xlsx", colNames=T, borders="rows")
+```
+
+
+#### Supplementary Table 4
+```{r}
+##Mediation-age
+##Function to get te, de, ie
+med <- function(data) {
+  x=data[,c(4,6:9)] #covariates and mediators:stage_binary, RACE, AGE, SEX, educ and income
+  pred=data[,2] #exposure GCD
+  y=data[,1]  
+  #alpha: the significance level at which to test if the potential mediators (identified by contmed, binmed, and catmed) can be used as a covariate or mediator in estimating y when all variables in x are included in the model. The default value is alpha=0.1
+  #alpha2:the significant level at which to test if a potential mediator is related with the predictor. The default value is alpha2=0.1.
+  #n account for the randomness brought in by the sampling process. 
+  #n2 indicates the number of bootstrap iterations. 
+  set.seed(2020)
+  med<-mma(x,y,pred=pred, predref="Non-Hispanic White", catmed=1, catref="Insured", alpha=0.8, alpha2=0.8, n=30,n2=10,type="lp")
+  ie_1 <- summary(med)$bin.result$results$indirect.effect$pred[c(2,4:5),2]
+  ie_2 <- summary(med)$bin.result$results$indirect.effect$`predNon-Hispanic Asian`[c(2,4:5),2]
+  ie_3 <- summary(med)$bin.result$results$indirect.effect$predHispanic[c(2,4:5),2]
+  ie <- rbind(ie_1, ie_2, ie_3)
+  row.names(ie) <- c("Non-Hispanic Black", "Non-Hispanic Asian", "Hispanic")
+  te <- t(summary(med)$bin.result$results$total.effect[c(2,4:5),])
+  row.names(te) <- c("Non-Hispanic Black", "Non-Hispanic Asian", "Hispanic")
+  de <- t(summary(med)$bin.result$results$direct.effect[c(2,4:5),])
+  row.names(de) <- c("Non-Hispanic Black", "Non-Hispanic Asian", "Hispanic")
+  t <- cbind(te,de,ie)
+  return(t)
+}
+
+#children
+c <- med(data%>%filter(agebi=="children"))
+#adolescents
+a <- med(data%>%filter(agebi=="Adolescents"))
+t5 <- rbind(c,a)
+
+list <- list("Single mediator"=t5)
+write.xlsx(list, "MediationResults_age.xlsx", colNames=T, borders="rows")
+```
+
+#### Supplementary Table 5
+```{r}
+####Mediation-cantype-Medicaid only 
+##Function to get te, de, ie
+med_m <- function(data) {
+  x=data[,c(3:8)] #covariates and mediators:stage_binary, RACE, AGE, SEX, educ and income
+  pred=data[,2] #exposure GCD
+  y=data[,1] 
+  #alpha: the significance level at which to test if the potential mediators (identified by contmed, binmed, and catmed) can be used as a covariate or mediator in estimating y when all variables in x are included in the model. The default value is alpha=0.1
+  #alpha2:the significant level at which to test if a potential mediator is related with the predictor. The default value is alpha2=0.1.
+  #n account for the randomness brought in by the sampling process. 
+  #n2 indicates the number of bootstrap iterations. 
+  set.seed(2020)
+  med<-mma(x,y,pred=pred, predref="Non-Hispanic White", binmed=1, binref="Insured", alpha=0.8, alpha2=0.8, n=30,n2=10,type="lp")
+  ie_1 <- summary(med)$bin.result$results$indirect.effect$pred[c(2,4:5),2]
+  ie_2 <- summary(med)$bin.result$results$indirect.effect$`predNon-Hispanic Asian`[c(2,4:5),2]
+  ie_3 <- summary(med)$bin.result$results$indirect.effect$predHispanic[c(2,4:5),2]
+  ie <- rbind(ie_1, ie_2, ie_3)
+  row.names(ie) <- c("Non-Hispanic Black", "Non-Hispanic Asian", "Hispanic")
+  te <- t(summary(med)$bin.result$results$total.effect[c(2,4:5),])
+  row.names(te) <- c("Non-Hispanic Black", "Non-Hispanic Asian", "Hispanic")
+  de <- t(summary(med)$bin.result$results$direct.effect[c(2,4:5),])
+  row.names(de) <- c("Non-Hispanic Black", "Non-Hispanic Asian", "Hispanic")
+  t <- cbind(te,de,ie)
+  return(t)
+}
+
+#Overall
+tot <- med_m(seer2)
+#By cantype
+c2 <- med_m(seer2%>%filter(cantype_cat=="II"))
+c3 <- med_m(seer2%>%filter(cantype_cat=="III")) #not include uninsured in the analyses
+c4 <- med_m(seer2%>%filter(cantype_cat=="IV"))
+c5 <- med_m(seer2%>%filter(cantype_cat=="V"))
+c6 <- med_m(seer2%>%filter(cantype_cat=="VI"))
+c7 <- med_m(seer2%>%filter(cantype_cat=="VII"))
+c8 <- med_m(seer2%>%filter(cantype_cat=="VIII"))
+c9 <- med_m(seer2%>%filter(cantype_cat=="IX"))
+c10 <- med_m(seer2%>%filter(cantype_cat=="X"))
+c11 <- med_m(seer2%>%filter(cantype_cat=="XI"))
+
+t4 <- rbind(tot, c2, c3, c4, c5, c6 ,c7 ,c8, c9 ,c10, c11)
+list <- list("Single mediator"=t4)
+write.xlsx(list, "MediationResults_m.xlsx", colNames=T, borders="rows")
+```
+

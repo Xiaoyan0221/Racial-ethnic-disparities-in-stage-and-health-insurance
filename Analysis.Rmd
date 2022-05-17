@@ -10,7 +10,8 @@ output:
 #### Load libraries
 ```{r message=FALSE, warning=FALSE}
 rm(list=ls())
-pacman::p_load(readr, funModeling, tidyverse, questionr, mma, survival, mediation,RColorBrewer, gtools,regclass, lmtest, openxlsx, mice, survminer,patchwork)
+pacman::p_load(readr, funModeling, tidyverse, questionr, mma, survival, mediation,RColorBrewer, gtools,regclass, lmtest, openxlsx, mice, survminer,patchwork, tableone, msm, sandwich, broom)
+
 ```
 
 #### Data management
@@ -50,6 +51,7 @@ seer <- read_delim("RacialDData.txt", "\t", escape_double = FALSE, trim_ws = TRU
          Stage_bi=case_when(Stage %in% c("Localized", "Regional") ~ "Early",
                             Stage %in% c("Distant") ~ "Late"),
          Stage_bi=factor(Stage_bi, levels = c("Early", "Late")),
+         Stage_bi_n=ifelse(Stage_bi=="Early",0,1),
          cantype_cat=substring(`ICCC site rec extended ICD-O-3/WHO 2008`,1,4),
          cantype_cat=sub("\\(.*", "", cantype_cat),
          cantype_cat=ifelse(cantype_cat=="Not ", NA,
@@ -81,8 +83,7 @@ seer <- read_delim("RacialDData.txt", "\t", escape_double = FALSE, trim_ws = TRU
          death=case_when(`SEER cause-specific death classification`=="Alive or dead of other cause"~0,
                          `SEER cause-specific death classification`=="Dead (attributable to this cancer dx)"~1)) %>%
   filter(age<20,`Year of diagnosis`>2006, cantype_cat!="I",`First malignant primary indicator`=="Yes") %>%
-  dplyr::select(Stage_bi,raceeth, insur,agecat, Sex, houseincomecat, unemploycat, region2, 
-                cantype_cat, agebi, insur2,`Insurance Recode (2007+)`) %>%
+  dplyr::select(Stage_bi, Stage_bi_n, raceeth, insur,agecat, Sex, houseincomecat, unemploycat, region2, cantype_cat, agebi, insur2, `Insurance Recode (2007+)`) %>%
   as.data.frame()
 
 seer2 <- seer %>% filter(!is.na(insur2))%>% dplyr::select( Stage_bi,raceeth, insur2, everything()) %>%dplyr::select(-insur) %>% drop_na() 
@@ -93,7 +94,7 @@ data <- seer %>% dplyr::select(-insur2) %>% drop_na()
 
 #### Table 1
 ```{r}
-vars=c("agecat", "Sex","insur","houseincomecat", "famincomecat", "unemploycat", "region2","Stage_bi","cantype_cat")
+vars=c("agecat", "Sex","insur","houseincomecat", "unemploycat", "region2","Stage_bi","cantype_cat")
 tab <- CreateTableOne(vars = vars, strata = "raceeth", data = data)
 tab1exp <- print(tab, quote = FALSE, noSpaces = TRUE, printToggle = FALSE, showAllLevels = TRUE)
 ## Save to a CSV file
@@ -123,6 +124,78 @@ t2(data%>%filter(cantype_cat=="VIII"))
 t2(data%>%filter(cantype_cat=="IX"))
 t2(data%>%filter(cantype_cat=="X"))
 t2(data%>%filter(cantype_cat=="XI"))
+
+## add Poisson regression 
+
+t2_1_poisson <- function(data) {
+m2 <- glm(Stage_bi_n ~ raceeth + agecat + Sex+ houseincomecat  +unemploycat+region2+insur, data= data, family = "poisson")
+cov.m2 <- vcovHC(m2, type="HC0")
+std.err <- sqrt(diag(cov.m2))
+r.est <- cbind(Estimate= coef(m2), "Robust SE" = std.err,
+"Pr(>|z|)" = 2 * pnorm(abs(coef(m2)/std.err), lower.tail=FALSE),
+LL = coef(m2) - 1.96 * std.err,
+UL = coef(m2) + 1.96 * std.err)
+s <- deltamethod(list(~ exp(x1), ~ exp(x2), ~ exp(x3), ~ exp(x4),
+                      ~ exp(x5), ~ exp(x6), ~ exp(x7), ~ exp(x8),
+                      ~ exp(x9), ~ exp(x10), ~ exp(x11), ~ exp(x12),
+                      ~ exp(x13), ~ exp(x14), ~ exp(x15), ~ exp(x16),
+                      ~ exp(x17), ~ exp(x18)), coef(m2), cov.m2)
+## exponentiate old estimates dropping the p values
+rexp.est <- exp(r.est[, -3])
+## replace SEs with estimates for exponentiated coefficients
+rexp.est[, "Robust SE"] <- s
+return(rexp.est)
+}
+
+coeftest(m2, vcov. = sandwich)
+#Overall
+t2_1_poisson(data)
+#By cantype
+t2_1_poisson(data%>%filter(cantype_cat=="II"))
+t2_1_poisson(data%>%filter(cantype_cat=="III"))
+t2_1_poisson(data%>%filter(cantype_cat=="IV"))
+#t2_1_poisson(data%>%filter(cantype_cat=="V"))
+t2_1_poisson(data%>%filter(cantype_cat=="VI"))
+t2_1_poisson(data%>%filter(cantype_cat=="VII"))
+t2_1_poisson(data%>%filter(cantype_cat=="VIII"))
+t2_1_poisson(data%>%filter(cantype_cat=="IX"))
+t2_1_poisson(data%>%filter(cantype_cat=="X"))
+t2_1_poisson(data%>%filter(cantype_cat=="XI"))
+
+
+## add Poisson regression 
+t2_2_poisson <- function(data) {
+m2 <- glm(Stage_bi_n ~ raceeth + agecat + Sex+ houseincomecat  +unemploycat+region2, data= data, family = "poisson")
+cov.m2 <- vcovHC(m2, type="HC0")
+std.err <- sqrt(diag(cov.m2))
+r.est <- cbind(Estimate= coef(m2), "Robust SE" = std.err,
+"Pr(>|z|)" = 2 * pnorm(abs(coef(m2)/std.err), lower.tail=FALSE),
+LL = coef(m2) - 1.96 * std.err,
+UL = coef(m2) + 1.96 * std.err)
+s <- deltamethod(list(~ exp(x1), ~ exp(x2), ~ exp(x3), ~ exp(x4),
+                      ~ exp(x5), ~ exp(x6), ~ exp(x7), ~ exp(x8),
+                      ~ exp(x9), ~ exp(x10), ~ exp(x11), ~ exp(x12),
+                      ~ exp(x13), ~ exp(x14), ~ exp(x15), ~ exp(x16)), coef(m2), cov.m2)
+## exponentiate old estimates dropping the p values
+rexp.est <- exp(r.est[, -3])
+## replace SEs with estimates for exponentiated coefficients
+rexp.est[, "Robust SE"] <- s
+return(rexp.est)
+}
+
+#Overall
+t2_2_poisson(data)
+#By cantype
+t2_2_poisson(data%>%filter(cantype_cat=="II"))
+t2_2_poisson(data%>%filter(cantype_cat=="III"))
+t2_2_poisson(data%>%filter(cantype_cat=="IV"))
+#t2_2_poisson(data%>%filter(cantype_cat=="V"))
+t2_2_poisson(data%>%filter(cantype_cat=="VI"))
+t2_2_poisson(data%>%filter(cantype_cat=="VII"))
+t2_2_poisson(data%>%filter(cantype_cat=="VIII"))
+t2_2_poisson(data%>%filter(cantype_cat=="IX"))
+t2_2_poisson(data%>%filter(cantype_cat=="X"))
+t2_2_poisson(data%>%filter(cantype_cat=="XI"))
 ```
 
 #### Table 3
@@ -139,6 +212,30 @@ m3 <- glm(Stage_bi ~ raceeth + Sex+ houseincomecat  +unemploycat+region2+insur, 
 t <-  cbind(cbind(odds.ratio(m1)$OR[2:4],odds.ratio(m1)$`2.5 %`[2:4],odds.ratio(m1)$`97.5 %`[2:4]),
       cbind(odds.ratio(m2)$OR[2:4],odds.ratio(m2)$`2.5 %`[2:4],odds.ratio(m2)$`97.5 %`[2:4]),
       cbind(odds.ratio(m3)$OR[2:4],odds.ratio(m3)$`2.5 %`[2:4],odds.ratio(m3)$`97.5 %`[2:4]))
+
+
+#Poisson results
+m2 <- glm(Stage_bi_n ~ raceeth + agebi + Sex+ houseincomecat  +unemploycat+region2, data= data, family = "poisson")
+m3 <- glm(Stage_bi_n ~ raceeth*agebi + Sex+ houseincomecat  +unemploycat+region2+insur, data= data, family = "poisson")
+lrtest(m2, m3) #<0.001
+
+
+m2 <- glm(Stage_bi_n ~ raceeth + Sex+ houseincomecat  +unemploycat+region2+insur, data= data%>%filter(agecat=="15-19"), family = "poisson")
+cov.m2 <- vcovHC(m2, type="HC0")
+std.err <- sqrt(diag(cov.m2))
+r.est <- cbind(Estimate= coef(m2), "Robust SE" = std.err,
+"Pr(>|z|)" = 2 * pnorm(abs(coef(m2)/std.err), lower.tail=FALSE),
+LL = coef(m2) - 1.96 * std.err,
+UL = coef(m2) + 1.96 * std.err)
+s <- deltamethod(list(~ exp(x1), ~ exp(x2), ~ exp(x3), ~ exp(x4),
+                      ~ exp(x5), ~ exp(x6), ~ exp(x7), ~ exp(x8),
+                      ~ exp(x9), ~ exp(x10), ~ exp(x11), ~ exp(x12),
+                      ~ exp(x13), ~ exp(x14)), coef(m2), cov.m2)
+## exponentiate old estimates dropping the p values
+rexp.est <- exp(r.est[, -3])
+## replace SEs with estimates for exponentiated coefficients
+rexp.est[, "Robust SE"] <- s
+rexp.est
 ```
 
 #### Figure 1
@@ -235,7 +332,38 @@ cbind(summary(pool(with(imp, glm(Stage_bi ~ raceeth + agecat + Sex+ houseincomec
 imp_c <- complete(imp, "long", include=T)
 imp_c2 <- imp_c%>%filter(cantype_cat=="II")
 imp_c2 <- as.mids(imp_c2)
+
 cbind(summary(pool(with(imp_c2, glm(Stage_bi ~ raceeth + agecat + Sex+ houseincomecat  +unemploycat+region2, family = "binomial"))), conf.int = TRUE, exponentiate = TRUE)[2:4,c(1,2,7,8)],summary(pool(with(imp_c2, glm(Stage_bi ~ raceeth + agecat + Sex+ houseincomecat  +unemploycat+region2+insur, family = "binomial"))), conf.int = TRUE, exponentiate = TRUE)[2:4,c(1,2,7,8)])
+
+#Poisson with robust SE
+# Running Multiple Poisson Robust Regressions
+fit <- with(imp, coeftest(glm(Stage_bi_n ~ raceeth + agecat + Sex+ houseincomecat  +unemploycat+region2, family='poisson'), vcov. = sandwich))
+# Pooling the Results ()
+cbind(summary(pool(fit))[2:4, 1], exp(summary(pool(fit))[2:4, 2]), exp(summary(pool(fit))[2:4, 2]-1.96*summary(pool(fit))[2:4, 3]), exp(summary(pool(fit))[2:4, 2]+1.96*summary(pool(fit))[2:4, 3]))
+
+#By canertype
+imp_c <- complete(imp, "long", include=T)
+imp_c2 <- imp_c%>%filter(cantype_cat=="III")
+imp_c2 <- as.mids(imp_c2)
+
+fit <- with(imp_c2, coeftest(glm(Stage_bi_n ~ raceeth + agecat + Sex+ houseincomecat  +unemploycat+region2, family='poisson'), vcov. = sandwich))
+# Pooling the Results ()
+cbind(summary(pool(fit))[2:4, 1], exp(summary(pool(fit))[2:4, 2]), exp(summary(pool(fit))[2:4, 2]-1.96*summary(pool(fit))[2:4, 3]), exp(summary(pool(fit))[2:4, 2]+1.96*summary(pool(fit))[2:4, 3]))
+
+#add insur
+# Running Multiple Poisson Robust Regressions
+fit <- with(imp, coeftest(glm(Stage_bi_n ~ raceeth + agecat + Sex+ houseincomecat  +unemploycat+region2+insur, family='poisson'), vcov. = sandwich))
+# Pooling the Results ()
+cbind(summary(pool(fit))[2:4, 1], exp(summary(pool(fit))[2:4, 2]), exp(summary(pool(fit))[2:4, 2]-1.96*summary(pool(fit))[2:4, 3]), exp(summary(pool(fit))[2:4, 2]+1.96*summary(pool(fit))[2:4, 3]))
+
+#By canertype
+imp_c <- complete(imp, "long", include=T)
+imp_c2 <- imp_c%>%filter(cantype_cat=="XI")
+imp_c2 <- as.mids(imp_c2)
+
+fit <- with(imp_c2, coeftest(glm(Stage_bi_n ~ raceeth + agecat + Sex+ houseincomecat  +unemploycat+region2+insur, family='poisson'), vcov. = sandwich))
+# Pooling the Results ()
+cbind(summary(pool(fit))[2:4, 1], exp(summary(pool(fit))[2:4, 2]), exp(summary(pool(fit))[2:4, 2]-1.96*summary(pool(fit))[2:4, 3]), exp(summary(pool(fit))[2:4, 2]+1.96*summary(pool(fit))[2:4, 3]))
 ```
 
 #### Supplementary Table 3
@@ -243,8 +371,8 @@ cbind(summary(pool(with(imp_c2, glm(Stage_bi ~ raceeth + agecat + Sex+ houseinco
 ####Mediation-cantype
 ##Function to get te, de, ie
 med <- function(data) {
-  x=data[,c(3:8)] #covariates and mediators:stage_binary, RACE, AGE, SEX, educ and income
-  pred=data[,2] #exposure GCD
+  x=data[,c(4:9)] #covariates and mediators:stage_binary, RACE, AGE, SEX, educ and income
+  pred=data[,3] #exposure GCD
   y=data[,1] 
   #alpha: the significance level at which to test if the potential mediators (identified by contmed, binmed, and catmed) can be used as a covariate or mediator in estimating y when all variables in x are included in the model. The default value is alpha=0.1
   #alpha2:the significant level at which to test if a potential mediator is related with the predictor. The default value is alpha2=0.1.
@@ -266,7 +394,7 @@ med <- function(data) {
 }
 
 #Overall
-tot <- med(data)
+tot1 <- med(data)
 #By cantype
 c2 <- med(data%>%filter(cantype_cat=="II"))
 c3 <- med(data%>%filter(cantype_cat=="III")) #not include uninsured in the analyses
@@ -282,6 +410,47 @@ c11 <- med(data%>%filter(cantype_cat=="XI"))
 t4 <- rbind(tot, c2, c3, c4, c5, c6 ,c7 ,c8, c9 ,c10, c11)
 list <- list("Single mediator"=t4)
 write.xlsx(list, "MediationResults.xlsx", colNames=T, borders="rows")
+
+##Function to get te, de, ie
+med2 <- function(data) {
+  x=data[,c(4:9)] #covariates and mediators:stage_binary, RACE, AGE, SEX, educ and income
+  pred=data[,3] #exposure GCD
+  y=data[,2] #count y
+  #alpha: the significance level at which to test if the potential mediators (identified by contmed, binmed, and catmed) can be used as a covariate or mediator in estimating y when all variables in x are included in the model. The default value is alpha=0.1
+  #alpha2:the significant level at which to test if a potential mediator is related with the predictor. The default value is alpha2=0.1.
+  #n account for the randomness brought in by the sampling process. 
+  #n2 indicates the number of bootstrap iterations. 
+  set.seed(2020)
+  med<-mma(x,y,pred=pred, predref="Non-Hispanic White", catmed=1, catref="Insured", alpha=0.8, alpha2=0.8, n=30,n2=10,type="lp",family1="poisson")
+  ie_1 <- summary(med)$bin.result$results$indirect.effect$pred[c(2,4:5),2]
+  ie_2 <- summary(med)$bin.result$results$indirect.effect$`predNon-Hispanic Asian`[c(2,4:5),2]
+  ie_3 <- summary(med)$bin.result$results$indirect.effect$predHispanic[c(2,4:5),2]
+  ie <- rbind(ie_1, ie_2, ie_3)
+  row.names(ie) <- c("Non-Hispanic Black", "Non-Hispanic Asian", "Hispanic")
+  te <- t(summary(med)$bin.result$results$total.effect[c(2,4:5),])
+  row.names(te) <- c("Non-Hispanic Black", "Non-Hispanic Asian", "Hispanic")
+  de <- t(summary(med)$bin.result$results$direct.effect[c(2,4:5),])
+  row.names(de) <- c("Non-Hispanic Black", "Non-Hispanic Asian", "Hispanic")
+  t <- cbind(te,de,ie)
+  return(t)
+}
+#Overall
+tot2 <- med2(data)
+#By cantype
+c2 <- med2(data%>%filter(cantype_cat=="II"))
+c3 <- med2(data%>%filter(cantype_cat=="III")) #not include uninsured in the analyses
+c4 <- med2(data%>%filter(cantype_cat=="IV"))
+#c5 <- med(data%>%filter(cantype_cat=="V"))
+c6 <- med2(data%>%filter(cantype_cat=="VI"))
+c7 <- med2(data%>%filter(cantype_cat=="VII"))
+c8 <- med2(data%>%filter(cantype_cat=="VIII"))
+c9 <- med2(data%>%filter(cantype_cat=="IX"))
+c10 <- med2(data%>%filter(cantype_cat=="X"))
+c11 <- med2(data%>%filter(cantype_cat=="XI"))
+
+t4 <- rbind(tot2, c2, c4, c6 ,c7 ,c8, c9 ,c10, c11)
+list <- list("Single mediator"=t4)
+write.xlsx(list, "MediationResults_poisson.xlsx", colNames=T, borders="rows")
 ```
 
 
@@ -320,6 +489,40 @@ t5 <- rbind(c,a)
 
 list <- list("Single mediator"=t5)
 write.xlsx(list, "MediationResults_age.xlsx", colNames=T, borders="rows")
+
+# POISSONN
+##Function to get te, de, ie
+med2 <- function(data) {
+  x=data[,c(4,6:9)] #covariates and mediators:stage_binary, RACE, AGE, SEX, educ and income
+  pred=data[,3] #exposure GCD
+  y=data[,2]  
+  #alpha: the significance level at which to test if the potential mediators (identified by contmed, binmed, and catmed) can be used as a covariate or mediator in estimating y when all variables in x are included in the model. The default value is alpha=0.1
+  #alpha2:the significant level at which to test if a potential mediator is related with the predictor. The default value is alpha2=0.1.
+  #n account for the randomness brought in by the sampling process. 
+  #n2 indicates the number of bootstrap iterations. 
+  set.seed(2020)
+  med<-mma(x,y,pred=pred, predref="Non-Hispanic White", catmed=1, catref="Insured", alpha=0.8, alpha2=0.8, n=30,n2=10,type="lp",family1="poisson")
+  ie_1 <- summary(med)$bin.result$results$indirect.effect$pred[c(2,4:5),2]
+  ie_2 <- summary(med)$bin.result$results$indirect.effect$`predNon-Hispanic Asian`[c(2,4:5),2]
+  ie_3 <- summary(med)$bin.result$results$indirect.effect$predHispanic[c(2,4:5),2]
+  ie <- rbind(ie_1, ie_2, ie_3)
+  row.names(ie) <- c("Non-Hispanic Black", "Non-Hispanic Asian", "Hispanic")
+  te <- t(summary(med)$bin.result$results$total.effect[c(2,4:5),])
+  row.names(te) <- c("Non-Hispanic Black", "Non-Hispanic Asian", "Hispanic")
+  de <- t(summary(med)$bin.result$results$direct.effect[c(2,4:5),])
+  row.names(de) <- c("Non-Hispanic Black", "Non-Hispanic Asian", "Hispanic")
+  t <- cbind(te,de,ie)
+  return(t)
+}
+
+#children
+c <- med2(data%>%filter(agebi=="children"))
+#adolescents
+a <- med2(data%>%filter(agebi=="Adolescents"))
+t5 <- rbind(c,a)
+
+list <- list("Single mediator"=t5)
+write.xlsx(list, "MediationResults_age_poisson.xlsx", colNames=T, borders="rows")
 ```
 
 #### Supplementary Table 5
@@ -353,7 +556,7 @@ med_m <- function(data) {
 tot <- med_m(seer2)
 #By cantype
 c2 <- med_m(seer2%>%filter(cantype_cat=="II"))
-c3 <- med_m(seer2%>%filter(cantype_cat=="III")) #not include uninsured in the analyses
+c3 <- med_m(seer2%>%filter(cantype_cat=="III"))
 c4 <- med_m(seer2%>%filter(cantype_cat=="IV"))
 c5 <- med_m(seer2%>%filter(cantype_cat=="V"))
 c6 <- med_m(seer2%>%filter(cantype_cat=="VI"))
@@ -366,5 +569,47 @@ c11 <- med_m(seer2%>%filter(cantype_cat=="XI"))
 t4 <- rbind(tot, c2, c3, c4, c5, c6 ,c7 ,c8, c9 ,c10, c11)
 list <- list("Single mediator"=t4)
 write.xlsx(list, "MediationResults_m.xlsx", colNames=T, borders="rows")
+
+##Function to get te, de, ie
+med_m2 <- function(data) {
+  x=data[,c(3,5:9)] #covariates and mediators:stage_binary, RACE, AGE, SEX, educ and income
+  pred=data[,2] #exposure GCD
+  y=data[,4] 
+  #alpha: the significance level at which to test if the potential mediators (identified by contmed, binmed, and catmed) can be used as a covariate or mediator in estimating y when all variables in x are included in the model. The default value is alpha=0.1
+  #alpha2:the significant level at which to test if a potential mediator is related with the predictor. The default value is alpha2=0.1.
+  #n account for the randomness brought in by the sampling process. 
+  #n2 indicates the number of bootstrap iterations. 
+  set.seed(2020)
+  med<-mma(x,y,pred=pred, predref="Non-Hispanic White", binmed=1, binref="Insured", alpha=0.8, alpha2=0.8, n=30,n2=10,type="lp",family1="poisson")
+  ie_1 <- summary(med)$bin.result$results$indirect.effect$pred[c(2,4:5),2]
+  ie_2 <- summary(med)$bin.result$results$indirect.effect$`predNon-Hispanic Asian`[c(2,4:5),2]
+  ie_3 <- summary(med)$bin.result$results$indirect.effect$predHispanic[c(2,4:5),2]
+  ie <- rbind(ie_1, ie_2, ie_3)
+  row.names(ie) <- c("Non-Hispanic Black", "Non-Hispanic Asian", "Hispanic")
+  te <- t(summary(med)$bin.result$results$total.effect[c(2,4:5),])
+  row.names(te) <- c("Non-Hispanic Black", "Non-Hispanic Asian", "Hispanic")
+  de <- t(summary(med)$bin.result$results$direct.effect[c(2,4:5),])
+  row.names(de) <- c("Non-Hispanic Black", "Non-Hispanic Asian", "Hispanic")
+  t <- cbind(te,de,ie)
+  return(t)
+}
+
+#Overall
+tot <- med_m2(seer2)
+#By cantype
+c2 <- med_m2(seer2%>%filter(cantype_cat=="II"))
+c3 <- med_m2(seer2%>%filter(cantype_cat=="III"))
+c4 <- med_m2(seer2%>%filter(cantype_cat=="IV"))
+c5 <- med_m2(seer2%>%filter(cantype_cat=="V"))
+c6 <- med_m2(seer2%>%filter(cantype_cat=="VI"))
+c7 <- med_m2(seer2%>%filter(cantype_cat=="VII"))
+c8 <- med_m2(seer2%>%filter(cantype_cat=="VIII"))
+c9 <- med_m2(seer2%>%filter(cantype_cat=="IX"))
+c10 <- med_m2(seer2%>%filter(cantype_cat=="X"))
+c11 <- med_m2(seer2%>%filter(cantype_cat=="XI"))
+
+t4 <- rbind(tot, c2, c3, c4, c5, c6 ,c7 ,c8, c9 ,c10, c11)
+list <- list("Single mediator"=t4)
+write.xlsx(list, "MediationResults_m_poisson.xlsx", colNames=T, borders="rows")
 ```
 
